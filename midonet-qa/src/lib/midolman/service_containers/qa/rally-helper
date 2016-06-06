@@ -1,0 +1,133 @@
+#!/bin/bash -x
+
+# Copyright 2015 Midokura SARL
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Creates the container.
+create() {
+    if [ -z ${NAME} ]; then
+        echo "Name of container not specified (-n)"
+        exit 1
+    elif [ -z ${MAC} ]; then
+        echo "MAC address of namespace not specified (-m)"
+        exit 1
+    fi
+
+    echo "Creating container with name $NAME MAC $MAC"
+    NS=${NAME}-ns
+    set -e
+    ip netns add $NAME
+    ip link add name $NAME type veth peer name $NS
+    ip link set $NAME up
+    ip link set $NS netns $NAME
+    ip netns exec $NAME ip link set dev $NS address $MAC
+    ip netns exec $NAME ip link set up dev $NS
+    ip netns exec $NAME ip link set up dev lo
+
+    if [ -z ${ADDRESS} ]; then
+        echo "Configuring container using DHCP"
+        ip netns exec $NAME dhclient -nw -v \
+            -pf /run/dhclient."$NAME".pid \
+            -lf /var/lib/dhcp/dhclient."$NAME".lease $NS
+    else
+        echo "Configuring container using static IP address $ADDRESS"
+        ip netns exec $NAME ip address add $ADDRESS dev $NS
+        if [ -z ${GATEWAY} ]; then
+            echo "Container gateway not specified"
+        else
+            echo "Configuring container default route via $GATEWAY"
+            ip netns exec $NAME ip route add default via $GATEWAY
+        fi
+    fi
+
+    echo "Starting SSH server"
+    ip netns exec $NAME /usr/sbin/sshd -o PidFile=/run/sshd."$NAME".pid
+
+    set +e
+}
+
+# Deletes the container.
+delete() {
+    if [ -z ${NAME} ]; then
+        echo "Name of container not specified (-n)"
+        exit 1
+    fi
+    if [ -z $(ip netns list | grep $NAME) ]; then
+        echo "Container not found: ignoring"
+        exit 0
+    fi
+    echo "Stopping container $NAME processes..."
+    for pid in $(ip netns pids $NAME)
+    do
+        kill -9 $pid
+    done
+    echo "Deleting container $NAME"
+    ip netns del $NAME
+    ip link del $NAME
+    exit 0
+}
+
+status() {
+    if [ -z ${NAME} ]; then
+        echo "Name of container not specified (-n)"
+        exit 1
+    fi
+    if [ -z ${TARGET} ]; then
+        echo "Target not specified (-t)"
+        exit 1
+    fi
+    ip netns exec $NAME ping -c 1 $TARGET
+}
+
+ACTION=$1
+shift
+while getopts ":n:m:a:g:t:" opt; do
+    case $opt in
+        n)
+            NAME=$OPTARG
+            ;;
+        m)
+            MAC=$OPTARG
+            ;;
+        a)
+            ADDRESS=$OPTARG
+            ;;
+        g)
+            GATEWAY=$OPTARG
+            ;;
+        t)
+            TARGET=$OPTARG
+            ;;
+        :)
+            echo "Option -$OPTARG requires an argument."
+            ;;
+    esac
+done
+
+if [ -z ${ACTION} ]; then
+    echo "No action specified."
+    exit 1
+fi
+
+case $ACTION in
+    create)
+        create
+        ;;
+    delete)
+        delete
+        ;;
+    status)
+        status
+        ;;
+esac

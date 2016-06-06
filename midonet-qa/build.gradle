@@ -1,0 +1,130 @@
+/*
+ * Copyright 2016 Midokura SARL
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+apply plugin: 'scala'
+apply plugin: 'application'
+apply from: "${rootProject.projectDir}/fpm.gradle"
+apply from: "${rootProject.projectDir}/git.gradle"
+
+jar {
+    manifest {
+        attributes 'Implementation-Title': 'MidoNet Quality Assurance Package',
+                   'Implementation-Version': version
+    }
+}
+
+sourceSets {
+    main {
+        scala { srcDirs = ['src/main/scala', 'src/main/java'] }
+        java { srcDirs = [] }
+    }
+    test {
+        scala { srcDirs = ['src/test/scala', 'src/test/java'] }
+        java { srcDirs = [] }
+    }
+}
+
+mainClassName = "org.midonet.conf.MidoConfTool"
+
+dependencies {
+    compile project(':midonet-util'), project(':nsdb')
+
+    compile libraries.scala,
+            libraries.commons_lang3,
+            libraries.commons_lang,
+            libraries.guice,
+            libraries.rx,
+            libraries.logback,
+            libraries.zookeeper
+
+    testCompile group: 'junit', name: 'junit', version: '4.11'
+}
+
+task preparePkg(type: Copy, dependsOn: installShadowApp) {
+    from("${buildDir}/installShadow/${project.name}/lib/${project.name}-${midonetVersion}-all.jar") {
+        into "usr/share/midolman/plugins"
+    }
+    from("${buildDir}/installShadow/${project.name}/lib/${project.name}-${midonetVersion}-all.jar") {
+        into "usr/share/midonet-cluster/addons"
+    }
+    from("src/lib/midolman/service_containers/qa/rally-helper") {
+        into "usr/lib/midolman/plugins"
+    }
+    into "${pkgDestDir}"
+}
+
+task debianPrepare(type: Copy, dependsOn: installShadowApp) {
+    from("src/systemd/midolman.service") {
+        into "lib/systemd/system"
+    }
+    into "${pkgDestDir}"
+}
+
+task rhel7Prepare(type: Copy, dependsOn: installShadowApp) {
+    from("src/systemd/midolman.service") {
+        into "usr/lib/systemd/system"
+    }
+    into "${pkgDestDir}"
+}
+
+packaging {
+    version = project.debVersion
+    maintainer = project.maintainer
+    vendor = project.vendor
+    url = project.url
+    description = 'Quality Assurance Package'
+    fpmOpts = ['-a', 'all',
+               '--category', 'network',
+               '--url', 'http://midokura.com',
+               '--epoch', '2']
+}
+
+preparePkg.dependsOn cleanPkg
+
+debian.dependsOn debianPrepare
+debianPrepare.dependsOn preparePkg
+
+rpm.dependsOn rhel7Prepare
+rhel7Prepare.dependsOn preparePkg
+
+debian.doFirst {
+    project.packaging.version = project.debVersion
+    project.packaging.fpmOpts = project.packaging.fpmOpts.clone()
+    project.packaging.fpmOpts.addAll([
+            '-d', 'openjdk-8-jdk-headless | java8-runtime-headless | java8-runtime',
+            '--deb-recommends', 'java8-runtime-headless | java8-runtime' ])
+}
+
+rpm.doFirst {
+    project.packaging.version = project.rpmVersion
+    project.packaging.iteration = project.rpmRelease
+    project.packaging.fpmOpts = project.packaging.fpmOpts.clone()
+    if (project.rhelTarget == "el7") {
+        project.packaging.fpmOpts.addAll([
+                '--depends', 'java-1.8.0-openjdk-headless'])
+    } else { // (project.rhelTarget == "sles12")
+        project.packaging.fpmOpts.addAll([
+                '--depends', 'java >= 1.8.0'])
+    }
+}
+
+debian.doLast {
+    new File("${buildDir}/install/${project.name}").deleteDir()
+}
+
+rpm.doLast {
+    new File("${buildDir}/install/${project.name}").deleteDir()
+}
